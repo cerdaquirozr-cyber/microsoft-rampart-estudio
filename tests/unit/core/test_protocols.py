@@ -79,16 +79,15 @@ class TestInjectionHandleProtocol:
     def test_structural_subtyping(self) -> None:
         class MyHandle:
             @property
-            def indexing_delay_seconds(self) -> float:
-                return 5.0
-
-            @property
             def payload_id(self) -> str | None:
                 return "abc"
 
             @property
             def surface_name(self) -> str:
                 return "SharePoint"
+
+            async def wait_until_ready(self) -> None:
+                pass
 
             async def __aenter__(self) -> Self:
                 return self
@@ -108,16 +107,15 @@ class TestSurfaceProtocol:
     def test_structural_subtyping(self) -> None:
         class MyHandle:
             @property
-            def indexing_delay_seconds(self) -> float:
-                return 0.0
-
-            @property
             def payload_id(self) -> str | None:
                 return None
 
             @property
             def surface_name(self) -> str:
                 return "test"
+
+            async def wait_until_ready(self) -> None:
+                pass
 
             async def __aenter__(self) -> Self:
                 return self

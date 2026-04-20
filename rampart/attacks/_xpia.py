@@ -47,7 +47,7 @@ class XPIAExecution(BaseExecution):
 
     Phases (delegated to private helpers from ``_execute_async``):
         1. Activate all injection handles (via AsyncExitStack).
-        2. Wait for indexing (max delay across all handles).
+        2. Wait for indexing (concurrent per-handle).
         3. Create session (via async context manager).
         4. Drive the trigger conversation via the PromptDriver.
         5. Evaluate per-turn with early stopping on detection.
@@ -181,7 +181,7 @@ class XPIAExecution(BaseExecution):
         *,
         stack: AsyncExitStack,
     ) -> None:
-        """Activate all injection handles and wait for indexing.
+        """Activate all injection handles and wait for readiness.
 
         Args:
             stack (AsyncExitStack): The exit stack managing cleanup.
@@ -189,12 +189,10 @@ class XPIAExecution(BaseExecution):
         for handle in self._handles:
             await stack.enter_async_context(handle)
 
-        delay = max(
-            (h.indexing_delay_seconds for h in self._handles),
-            default=0.0,
-        )
-        if delay > 0:
-            await asyncio.sleep(delay)
+        # Concurrent: total = max of all wait times
+        async with asyncio.TaskGroup() as tg:
+            for handle in self._handles:
+                tg.create_task(handle.wait_until_ready())
 
     def _build_attack_result(
         self,

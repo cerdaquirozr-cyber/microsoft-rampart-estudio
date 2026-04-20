@@ -5,10 +5,14 @@
 
 Two protocols serving two audiences: Surface is what surface authors
 implement; InjectionHandle is what execution strategies consume.
+
+``sleep_until_ready`` is a helper function for surfaces that only need
+a simple delay-based readiness wait.
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Protocol, Self, runtime_checkable
 
 if TYPE_CHECKING:
@@ -30,11 +34,6 @@ class InjectionHandle(Protocol):
     """
 
     @property
-    def indexing_delay_seconds(self) -> float:
-        """How long to wait after activation for the agent to see the content."""
-        ...
-
-    @property
     def payload_id(self) -> str | None:
         """The injected payload's identifier, for reporting."""
         ...
@@ -42,6 +41,14 @@ class InjectionHandle(Protocol):
     @property
     def surface_name(self) -> str:
         """The name of the surface this handle injects into (e.g., 'SharePoint')."""
+        ...
+
+    async def wait_until_ready(self) -> None:
+        """Block until the injected content is visible to the agent.
+
+        Implementations should raise `TimeoutError` if readiness
+        operations are long-running to prevent indefinite blocking.
+        """
         ...
 
     async def __aenter__(self) -> Self:
@@ -56,6 +63,15 @@ class InjectionHandle(Protocol):
     ) -> None:
         """Remove the injection. Must be idempotent. Must not raise."""
         ...
+
+
+async def sleep_until_ready(delay: float) -> None:
+    """Sleep for `delay` seconds. Default readiness strategy for simple surfaces.
+
+    Args:
+        delay: Seconds to sleep before the injection is considered ready.
+    """
+    await asyncio.sleep(delay)
 
 
 @runtime_checkable

@@ -13,6 +13,7 @@ import logging
 from typing import TYPE_CHECKING, Self
 
 from rampart.core.errors import InfrastructureError
+from rampart.core.injection import sleep_until_ready
 
 if TYPE_CHECKING:
     import types
@@ -110,17 +111,18 @@ class OneDriveSurface:
             InfrastructureError: If Graph returns no ``DriveItem``.
         """
         filename = f"{payload.id}{payload.format.extension}"
-        upload_path = f"{self._folder_path}/{filename}"
+        upload_path = f"{self.folder_path}/{filename}"
 
         if payload.format.is_binary:
             if payload.artifact is None:
                 msg = (
                     f"Binary payload format {payload.format.value} "
-                    f"requires an artifact path."
+                    "requires an artifact path."
                 )
                 raise ValueError(
                     msg,
                 )
+
             content = payload.artifact.read_bytes()
         else:
             content = payload.content.encode("utf-8")
@@ -128,8 +130,8 @@ class OneDriveSurface:
         if len(content) > _MAX_SMALL_UPLOAD_BYTES:
             msg = (
                 f"Payload {payload.id} is {len(content)} bytes, which "
-                f"exceeds the 4 MiB small-upload limit. Upload sessions "
-                f"are not yet implemented."
+                "exceeds the 4 MiB small-upload limit. Upload sessions "
+                "are not yet implemented."
             )
             raise ValueError(
                 msg,
@@ -138,15 +140,15 @@ class OneDriveSurface:
         # Graph path-based addressing: root:/{relative-path}:
         # The trailing colon is required by the API.
         drive_item = (
-            await self._graph_client.drives.by_drive_id(self._drive_id)
+            await self._graph_client.drives.by_drive_id(self.drive_id)
             .items.by_drive_item_id(f"root:/{upload_path}:")
             .content.put(content)
         )
 
         if drive_item is None or drive_item.id is None:
             msg = (
-                f"Graph API returned no DriveItem after upload to "
-                f"drive={self._drive_id} path={upload_path}"
+                "Graph API returned no DriveItem after upload to "
+                f"drive={self.drive_id} path={upload_path}"
             )
             raise InfrastructureError(
                 msg,
@@ -156,7 +158,7 @@ class OneDriveSurface:
         logger.info(
             "Uploaded payload %s to OneDrive drive=%s path=%s (item=%s)",
             payload.id,
-            self._drive_id,
+            self.drive_id,
             upload_path,
             item_id,
         )
@@ -165,14 +167,14 @@ class OneDriveSurface:
     async def delete_async(self, *, item_id: str) -> None:
         """Delete a file from OneDrive by item ID."""
         await (
-            self._graph_client.drives.by_drive_id(self._drive_id)
+            self._graph_client.drives.by_drive_id(self.drive_id)
             .items.by_drive_item_id(item_id)
             .delete()
         )
         logger.info(
             "Deleted OneDrive item %s from drive=%s",
             item_id,
-            self._drive_id,
+            self.drive_id,
         )
 
 
@@ -185,11 +187,6 @@ class _OneDriveInjection:
         self._item_id: str | None = None
 
     @property
-    def indexing_delay_seconds(self) -> float:
-        """How long to wait after upload for content to be discoverable."""
-        return self._surface.indexing_delay
-
-    @property
     def payload_id(self) -> str | None:
         """The injected payload's identifier."""
         return self._payload.id
@@ -198,6 +195,15 @@ class _OneDriveInjection:
     def surface_name(self) -> str:
         """Identifies this injection as OneDrive for reporting."""
         return "OneDrive"
+
+    async def wait_until_ready(self) -> None:
+        """Wait for the uploaded content to be indexed and discoverable.
+
+        Note: Currently sleeps for `OneDriveSurface.indexing_delay` seconds.
+        Future versions will poll the Graph API for content availability instead and
+        raise `TimeoutError` if it doesn't appear within the `indexing_delay`.
+        """
+        await sleep_until_ready(delay=self._surface.indexing_delay)
 
     async def __aenter__(self) -> Self:
         """Upload payload to OneDrive. Raises InfrastructureError on failure."""

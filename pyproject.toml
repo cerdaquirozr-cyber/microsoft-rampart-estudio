@@ -68,7 +68,12 @@ skip_empty = true
 [tool.pyright]
 pythonVersion = "3.11"
 typeCheckingMode = "strict"
-include = ["rampart"]
+include = ["rampart", "tests"]
+
+[[tool.pyright.executionEnvironments]]
+root = "tests"
+extraPaths = ["."]
+reportPrivateUsage = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -26,8 +26,8 @@ class ToolDeclaration:
 
     name: str
     description: str = ""
-    parameters: dict[str, Any] = field(default_factory=dict)
-    permissions: list[str] = field(default_factory=list)
+    parameters: dict[str, Any] = field(default_factory=dict[str, Any])
+    permissions: list[str] = field(default_factory=list[str])
 
 
 @dataclass(kw_only=True)
@@ -63,10 +63,14 @@ class AppManifest:
     """
 
     name: str
-    tools: list[ToolDeclaration] = field(default_factory=list)
-    data_sources: list[DataSource] = field(default_factory=list)
+    tools: list[ToolDeclaration] = field(
+        default_factory=list[ToolDeclaration],
+    )
+    data_sources: list[DataSource] = field(
+        default_factory=list[DataSource],
+    )
     description: str = ""
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict[str, Any])
 
     def declares_tool(self, name: str) -> bool:
         """Check if a tool is declared in the manifest."""
@@ -87,7 +91,7 @@ class AppManifest:
             sections.append(self.description)
 
         if self.tools:
-            tool_lines = []
+            tool_lines: list[str] = []
             for t in self.tools:
                 params = ", ".join(f"{k}: {v}" for k, v in t.parameters.items())
                 desc = f" — {t.description}" if t.description else ""
@@ -96,7 +100,7 @@ class AppManifest:
             sections.append(f"Available tools:\n{tools}")
 
         if self.data_sources:
-            source_lines = []
+            source_lines: list[str] = []
             for ds in self.data_sources:
                 writable = (
                     " (writable by untrusted users)" if ds.writable_by_untrusted else ""

@@ -12,10 +12,10 @@ Internal module — never imported by consumer code.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
-from pyrit.models import MessagePiece
+from pyrit.models import Message, MessagePiece
 from pyrit.prompt_target import OpenAIChatTarget, PromptChatTarget
 
 if TYPE_CHECKING:
@@ -143,7 +143,9 @@ async def send_generation_request_async(
         original_value=user_message,
         conversation_id=conversation_id,
     )
-    request = request_piece.to_message()
+
+    # Can remove after bumping to PyRIT v0.13.0
+    request = cast("Message", request_piece.to_message())  # pyright: ignore[reportUnknownMemberType]
 
     responses = await target.send_prompt_async(message=request)
     return responses[0].get_value()

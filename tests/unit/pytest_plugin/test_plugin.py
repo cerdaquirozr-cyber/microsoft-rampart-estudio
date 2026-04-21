@@ -196,7 +196,7 @@ class TestRampartSession:
         assert group.unsafe == 2
         assert group.errors == 1
         assert group.threshold == 0.3
-        assert group.pass_rate == pytest.approx(0.4)
+        assert group.pass_rate == pytest.approx(0.4)  # pyright: ignore[reportUnknownMemberType]
         assert not group.passed  # UNSAFE present → always fails
 
     def test_record_trial_group_all_errors(self) -> None:
@@ -570,7 +570,7 @@ class TestRampartSessionAddSinks:
             pass
 
         with pytest.raises(TypeError, match="Expected ReportSink"):
-            session.add_sinks(sinks=[NotASink()])  # type: ignore[list-item]
+            session.add_sinks(sinks=[NotASink()])  # pyright: ignore[reportArgumentType]
 
     def test_add_sinks_preserves_existing(self) -> None:
         """Config-loaded sinks are not lost when fixture sinks are added."""
@@ -713,7 +713,10 @@ class TestSessionFinishIntegration:
     def test_sets_duration(self) -> None:
         import time
 
-        from rampart.pytest_plugin.plugin import _rampart_key, _session_start_key
+        from rampart.pytest_plugin.plugin import (
+            _rampart_key,
+            _session_start_key,
+        )
 
         session_mock = MagicMock()
         config_stash = _StashStub()

@@ -13,15 +13,17 @@ from __future__ import annotations
 import logging
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from rampart.core.errors import InfrastructureError
 from rampart.core.result import Result, SafetyStatus
+from rampart.core.types import EvalContext, Request, Response, Turn
 
 if TYPE_CHECKING:
     from rampart.core.adapter import AgentAdapter
+    from rampart.core.evaluator import Evaluator
+    from rampart.core.manifest import AppManifest
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +32,11 @@ class ExecutionEvent(Enum):
     """Lifecycle events fired during a BaseExecution run.
 
     ON_PRE_EXECUTE:  Fired before _execute_async is called.
-    ON_POST_EXECUTE: Fired after _execute_async returns a Result.
-    ON_ERROR:        Fired if _execute_async raises. The exception
-                     is re-raised after all handlers have been notified.
+    ON_POST_EXECUTE: Fired after _execute_async returns a Result
+                     (including error results).
+    ON_ERROR:        Fired when _execute_async raises any exception.
+                     The exception is converted to an ERROR result
+                     after handlers are notified.
     """
 
     ON_PRE_EXECUTE = "on_pre_execute"
@@ -171,16 +175,17 @@ class BaseExecution(ABC):
     """ABC for all execution strategies.
 
     Owns the execution lifecycle: ON_PRE_EXECUTE → _execute_async →
-    ON_POST_EXECUTE (or ON_ERROR). Subclasses implement only
+    ON_POST_EXECUTE (ON_ERROR fires for unexpected exceptions).
+    Subclasses implement only
     _execute_async — the skeleton is fixed here.
 
     Cross-cutting concerns (result collection, timing, infrastructure
     error handling) are handled by the lifecycle skeleton and
     ExecutionEventHandlers.
 
-    Infrastructure resilience is a base-class concern. If
-    _execute_async raises InfrastructureError, the base class catches
-    it and produces a Result with SafetyStatus.ERROR.
+    Infrastructure resilience is a base-class concern. Any
+    exception from _execute_async is caught and produces a
+    Result with SafetyStatus.ERROR.
 
     Args:
         event_handlers (list[ExecutionEventHandler] | None): Additional
@@ -212,20 +217,15 @@ class BaseExecution(ABC):
         Fires lifecycle events and delegates to _execute_async for
         strategy-specific logic.
 
-        InfrastructureError from _execute_async is caught here and
-        converted to a Result with SafetyStatus.ERROR.
-
-        Other exceptions propagate after ON_ERROR fires.
+        All exceptions from _execute_async are caught and converted
+        to a Result with SafetyStatus.ERROR, preventing a single test
+        from crashing the suite.
 
         Args:
             adapter (AgentAdapter): The agent to test.
 
         Returns:
             Result: Safety verdict with evidence and diagnostics.
-
-        Raises:
-            Exception: Any non-InfrastructureError exception from
-                _execute_async, after notifying handlers via ON_ERROR.
         """
         start = time.monotonic()
         await self._fire(
@@ -236,30 +236,29 @@ class BaseExecution(ABC):
 
         try:
             result = await self._execute_async(adapter=adapter)
-        except InfrastructureError as exc:
-            logger.warning(
-                "Infrastructure error during %s execution: %s",
-                self.strategy_name,
-                exc,
-                exc_info=True,
-            )
-            result = Result(
-                safe=False,
-                status=SafetyStatus.ERROR,
-                summary=f"Infrastructure error: {exc}",
-                strategy=self.strategy_name,
-                observability_level=adapter.observability_profile,
-                metadata={"error": str(exc), "error_type": type(exc).__name__},
-            )
         except Exception as exc:
-            elapsed = time.monotonic() - start
+            error_type = type(exc).__name__
+            logger.exception(
+                "%s during %s execution",
+                error_type,
+                self.strategy_name,
+            )
+
             await self._fire(
                 ExecutionEvent.ON_ERROR,
                 adapter=adapter,
-                elapsed=elapsed,
+                elapsed=time.monotonic() - start,
                 error=exc,
             )
-            raise
+
+            result = Result(
+                safe=False,
+                status=SafetyStatus.ERROR,
+                summary=f"{error_type}: {exc}",
+                strategy=self.strategy_name,
+                observability_level=adapter.observability_profile,
+                metadata={"error": str(exc), "error_type": error_type},
+            )
 
         elapsed = time.monotonic() - start
         result.duration_seconds = elapsed
@@ -321,3 +320,43 @@ class BaseExecution(ABC):
                     event.value,
                     exc_info=True,
                 )
+
+
+async def evaluate_turn_async(
+    *,
+    evaluator: Evaluator,
+    history: list[Turn],
+    request: Request,
+    response: Response,
+    turn_number: int,
+    driver_reasoning: str = "",
+    manifest: AppManifest | None = None,
+) -> Turn:
+    """Create a Turn, evaluate it, and return the Turn with eval_result attached.
+
+    Builds a provisional Turn (eval_result=None), passes it to the
+    evaluator inside an EvalContext that includes the full history,
+    then returns a frozen copy with the eval_result populated.
+
+    Args:
+        evaluator: The evaluator to invoke.
+        history: All prior completed turns.
+        request: What was sent to the agent this turn.
+        response: What the agent returned this turn.
+        turn_number: Position in the conversation (0-indexed).
+        driver_reasoning: Why the driver chose this request.
+        manifest: The agent's declared capabilities.
+
+    Returns:
+        Turn: An immutable Turn with eval_result populated.
+    """
+    provisional = Turn(
+        request=request,
+        response=response,
+        turn_number=turn_number,
+        driver_reasoning=driver_reasoning,
+    )
+    result = await evaluator.evaluate_async(
+        context=EvalContext(turns=[*history, provisional], manifest=manifest),
+    )
+    return replace(provisional, eval_result=result)

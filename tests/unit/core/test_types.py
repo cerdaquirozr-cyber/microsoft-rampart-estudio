@@ -3,6 +3,9 @@
 
 """Tests for rampart.core.types — core data model."""
 
+import dataclasses
+from pathlib import Path
+
 import pytest
 
 from rampart.core.types import (
@@ -36,6 +39,38 @@ class TestPayload:
         p1 = Payload(content="a")
         p2 = Payload(content="b")
         assert p1.id != p2.id
+
+    def test_binary_format_requires_artifact(self):
+        with pytest.raises(TypeError, match="requires an artifact"):
+            Payload(content="img", format=PayloadFormat.IMAGE)
+
+    def test_text_format_rejects_artifact(self, tmp_path: Path) -> None:
+        artifact = tmp_path / "file.txt"
+        artifact.write_text("x")
+        with pytest.raises(TypeError, match="artifact must be None"):
+            Payload(content="text", format=PayloadFormat.TEXT, artifact=artifact)
+
+    def test_binary_format_with_missing_artifact(self, tmp_path: Path) -> None:
+        missing = tmp_path / "missing.png"
+        with pytest.raises(FileNotFoundError, match="does not exist"):
+            Payload(content="img", format=PayloadFormat.IMAGE, artifact=missing)
+
+    def test_binary_format_with_valid_artifact(self, tmp_path: Path) -> None:
+        artifact = tmp_path / "test.png"
+        artifact.write_bytes(b"\x89PNG")
+        p = Payload(content="img", format=PayloadFormat.IMAGE, artifact=artifact)
+        assert p.artifact == artifact
+
+    def test_str_short_content(self):
+        p = Payload(content="hello")
+        assert str(p) == "hello"
+
+    def test_str_long_content_truncated(self):
+        long_text = "x" * 300
+        p = Payload(content=long_text)
+        result = str(p)
+        assert len(result) == 203  # 200 chars + "..."
+        assert result.endswith("...")
 
 
 class TestToolCall:
@@ -76,6 +111,22 @@ class TestTurn:
         assert t.request.attachments == []
         assert t.timestamp is None
         assert t.driver_reasoning == ""
+        assert t.eval_result is None
+
+    def test_eval_result_round_trips(self):
+        er = EvalResult(outcome=EvalOutcome.DETECTED, rationale="found it")
+        t = Turn(
+            request=Request(prompt="p"),
+            response=Response(text="r"),
+            eval_result=er,
+        )
+        assert t.eval_result is er
+        assert t.eval_result is not None and t.eval_result.detected is True
+
+    def test_frozen_prevents_mutation(self):
+        t = Turn(request=Request(prompt="p"), response=Response(text="r"))
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            t.eval_result = EvalResult(outcome=EvalOutcome.DETECTED)  # type: ignore[misc]
 
 
 class TestEvalResult:
@@ -182,3 +233,37 @@ class TestPayloadFormat:
         assert PayloadFormat.TEXT.value == "text"
         assert PayloadFormat.HTML.value == "html"
         assert PayloadFormat.MARKDOWN.value == "markdown"
+
+    def test_is_text_true_for_text_formats(self):
+        assert PayloadFormat.TEXT.is_text is True
+        assert PayloadFormat.HTML.is_text is True
+        assert PayloadFormat.MARKDOWN.is_text is True
+
+    def test_is_text_false_for_binary_formats(self):
+        assert PayloadFormat.IMAGE.is_text is False
+        assert PayloadFormat.PDF.is_text is False
+        assert PayloadFormat.DOCX.is_text is False
+        assert PayloadFormat.XLSX.is_text is False
+        assert PayloadFormat.AUDIO.is_text is False
+
+    def test_is_binary_true_for_binary_formats(self):
+        assert PayloadFormat.IMAGE.is_binary is True
+        assert PayloadFormat.PDF.is_binary is True
+        assert PayloadFormat.DOCX.is_binary is True
+
+    def test_is_binary_false_for_text_formats(self):
+        assert PayloadFormat.TEXT.is_binary is False
+        assert PayloadFormat.HTML.is_binary is False
+        assert PayloadFormat.MARKDOWN.is_binary is False
+
+    def test_extension_text_formats(self):
+        assert PayloadFormat.TEXT.extension == ".txt"
+        assert PayloadFormat.HTML.extension == ".html"
+        assert PayloadFormat.MARKDOWN.extension == ".md"
+
+    def test_extension_binary_formats(self):
+        assert PayloadFormat.IMAGE.extension == ".png"
+        assert PayloadFormat.PDF.extension == ".pdf"
+        assert PayloadFormat.DOCX.extension == ".docx"
+        assert PayloadFormat.XLSX.extension == ".xlsx"
+        assert PayloadFormat.AUDIO.extension == ".wav"

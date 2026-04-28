@@ -7,7 +7,7 @@ from typing import Self
 import pytest
 
 from rampart.core.adapter import AgentAdapter
-from rampart.core.errors import InfrastructureError
+from rampart.core.errors import DriverError, InfrastructureError
 from rampart.core.execution import (
     BaseExecution,
     ExecutionEvent,
@@ -16,7 +16,13 @@ from rampart.core.execution import (
 )
 from rampart.core.manifest import AppManifest
 from rampart.core.result import Result, SafetyStatus
-from rampart.core.types import ObservabilityLevel, Request, Response
+from rampart.core.types import (
+    EvalContext,
+    EvalResult,
+    ObservabilityLevel,
+    Request,
+    Response,
+)
 
 
 class _StubSession:
@@ -94,6 +100,19 @@ class _GenericErrorExecution(BaseExecution):
     async def _execute_async(self, *, adapter: AgentAdapter) -> Result:
         """Raise a generic runtime error."""
         raise RuntimeError("unexpected failure")
+
+
+class _DriverErrorExecution(BaseExecution):
+    """Execution that raises DriverError."""
+
+    @property
+    def strategy_name(self) -> str:
+        """Return test strategy name."""
+        return "driver_error"
+
+    async def _execute_async(self, *, adapter: AgentAdapter) -> Result:
+        """Raise a driver error."""
+        raise DriverError("LLM returned garbage")
 
 
 class _RecordingHandler(ExecutionEventHandler):
@@ -179,45 +198,62 @@ class TestInfrastructureErrorHandling:
         assert result.metadata["error_type"] == "InfrastructureError"
 
     @pytest.mark.asyncio
-    async def test_fires_post_execute_not_on_error(self) -> None:
+    async def test_fires_on_error_and_post_execute(self) -> None:
         handler = _RecordingHandler()
         execution = _InfraErrorExecution(event_handlers=[handler])
 
         await execution.execute_async(adapter=_StubAdapter())
 
         event_types = [e.event for e in handler.events]
+        assert ExecutionEvent.ON_ERROR in event_types
         assert ExecutionEvent.ON_POST_EXECUTE in event_types
-        assert ExecutionEvent.ON_ERROR not in event_types
 
 
-class TestGenericErrorPropagation:
+class TestGenericErrorHandling:
     @pytest.mark.asyncio
-    async def test_non_infra_error_propagates(self) -> None:
+    async def test_produces_error_result(self) -> None:
         execution = _GenericErrorExecution()
 
-        with pytest.raises(RuntimeError, match="unexpected failure"):
-            await execution.execute_async(adapter=_StubAdapter())
+        result = await execution.execute_async(adapter=_StubAdapter())
+
+        assert result.safe is False
+        assert result.status is SafetyStatus.ERROR
+        assert "unexpected failure" in result.summary
 
     @pytest.mark.asyncio
-    async def test_on_error_fires_before_propagation(self) -> None:
+    async def test_error_result_has_strategy(self) -> None:
+        execution = _GenericErrorExecution()
+
+        result = await execution.execute_async(adapter=_StubAdapter())
+
+        assert result.strategy == "generic_error"
+
+    @pytest.mark.asyncio
+    async def test_error_result_has_metadata(self) -> None:
+        execution = _GenericErrorExecution()
+
+        result = await execution.execute_async(adapter=_StubAdapter())
+
+        assert result.metadata["error"] == "unexpected failure"
+        assert result.metadata["error_type"] == "RuntimeError"
+
+    @pytest.mark.asyncio
+    async def test_fires_on_error_and_post_execute(self) -> None:
         handler = _RecordingHandler()
         execution = _GenericErrorExecution(event_handlers=[handler])
 
-        with pytest.raises(RuntimeError):
-            await execution.execute_async(adapter=_StubAdapter())
+        await execution.execute_async(adapter=_StubAdapter())
 
         event_types = [e.event for e in handler.events]
-        assert ExecutionEvent.ON_PRE_EXECUTE in event_types
         assert ExecutionEvent.ON_ERROR in event_types
-        assert ExecutionEvent.ON_POST_EXECUTE not in event_types
+        assert ExecutionEvent.ON_POST_EXECUTE in event_types
 
     @pytest.mark.asyncio
     async def test_on_error_contains_exception(self) -> None:
         handler = _RecordingHandler()
         execution = _GenericErrorExecution(event_handlers=[handler])
 
-        with pytest.raises(RuntimeError):
-            await execution.execute_async(adapter=_StubAdapter())
+        await execution.execute_async(adapter=_StubAdapter())
 
         error_event = [e for e in handler.events if e.event is ExecutionEvent.ON_ERROR][
             0
@@ -269,4 +305,140 @@ class TestDefaultHandlerFactory:
         from rampart.core.execution import register_default_handler_factory
 
         with pytest.raises(TypeError, match="callable"):
-            register_default_handler_factory("not a function")  # pyright: ignore[reportArgumentType]
+            register_default_handler_factory("not a function")  # type: ignore[arg-type]
+
+
+class TestDriverErrorHandling:
+    @pytest.mark.asyncio
+    async def test_produces_error_result(self) -> None:
+        execution = _DriverErrorExecution()
+        adapter = _StubAdapter()
+
+        result = await execution.execute_async(adapter=adapter)
+
+        assert result.safe is False
+        assert result.status is SafetyStatus.ERROR
+        assert "LLM returned garbage" in result.summary
+
+    @pytest.mark.asyncio
+    async def test_error_result_has_strategy(self) -> None:
+        execution = _DriverErrorExecution()
+
+        result = await execution.execute_async(adapter=_StubAdapter())
+
+        assert result.strategy == "driver_error"
+
+    @pytest.mark.asyncio
+    async def test_error_result_has_metadata(self) -> None:
+        execution = _DriverErrorExecution()
+
+        result = await execution.execute_async(adapter=_StubAdapter())
+
+        assert result.metadata["error"] == "LLM returned garbage"
+        assert result.metadata["error_type"] == "DriverError"
+
+    @pytest.mark.asyncio
+    async def test_fires_on_error_and_post_execute(self) -> None:
+        handler = _RecordingHandler()
+        execution = _DriverErrorExecution(event_handlers=[handler])
+
+        await execution.execute_async(adapter=_StubAdapter())
+
+        event_types = [e.event for e in handler.events]
+        assert ExecutionEvent.ON_ERROR in event_types
+        assert ExecutionEvent.ON_POST_EXECUTE in event_types
+
+
+class TestEvaluateTurnAsync:
+    @pytest.mark.asyncio
+    async def test_returns_turn_with_eval_result(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from rampart.core.execution import evaluate_turn_async
+        from rampart.core.types import (
+            EvalOutcome,
+            Request,
+            Response,
+        )
+
+        evaluator = AsyncMock()
+        evaluator.evaluate_async.return_value = EvalResult(
+            outcome=EvalOutcome.DETECTED,
+            rationale="found it",
+        )
+
+        turn = await evaluate_turn_async(
+            evaluator=evaluator,
+            history=[],
+            request=Request(prompt="hello"),
+            response=Response(text="world"),
+            turn_number=0,
+        )
+
+        assert turn.eval_result is not None
+        assert turn.eval_result.outcome is EvalOutcome.DETECTED
+        assert turn.request.prompt == "hello"
+        assert turn.response.text == "world"
+        assert turn.turn_number == 0
+
+    @pytest.mark.asyncio
+    async def test_includes_history_in_context(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from rampart.core.execution import evaluate_turn_async
+        from rampart.core.types import (
+            EvalOutcome,
+            Request,
+            Response,
+            Turn,
+        )
+
+        captured_context = None
+
+        async def capture_eval(*, context: EvalContext) -> EvalResult:
+            nonlocal captured_context
+            captured_context = context
+            return EvalResult(outcome=EvalOutcome.NOT_DETECTED)
+
+        evaluator = AsyncMock()
+        evaluator.evaluate_async.side_effect = capture_eval
+
+        history_turn = Turn(
+            request=Request(prompt="prev"),
+            response=Response(text="prev_resp"),
+        )
+
+        await evaluate_turn_async(
+            evaluator=evaluator,
+            history=[history_turn],
+            request=Request(prompt="current"),
+            response=Response(text="current_resp"),
+            turn_number=1,
+            driver_reasoning="test reasoning",
+        )
+
+        assert captured_context is not None
+        assert len(captured_context.turns) == 2
+        assert captured_context.turns[0].request.prompt == "prev"
+        assert captured_context.turns[1].request.prompt == "current"
+
+    @pytest.mark.asyncio
+    async def test_preserves_driver_reasoning(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from rampart.core.execution import evaluate_turn_async
+        from rampart.core.types import EvalOutcome, Request, Response
+
+        evaluator = AsyncMock()
+        evaluator.evaluate_async.return_value = EvalResult(outcome=EvalOutcome.DETECTED)
+
+        turn = await evaluate_turn_async(
+            evaluator=evaluator,
+            history=[],
+            request=Request(prompt="p"),
+            response=Response(text="r"),
+            turn_number=0,
+            driver_reasoning="choosing carefully",
+        )
+
+        assert turn.driver_reasoning == "choosing carefully"

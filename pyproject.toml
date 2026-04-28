@@ -46,6 +46,11 @@ dev = [
     "pytest-xdist[psutil]>=3.8.0",
     "ruff>=0.15.10",
 ]
+docs = [
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.27",
+]
 
 [project.urls]
 Homepage = "https://github.com/microsoft/RAMPART"
@@ -54,6 +59,9 @@ Issues = "https://github.com/microsoft/RAMPART/issues"
 
 [project.entry-points.pytest11]
 rampart = "rampart.pytest_plugin.plugin"
+
+[tool.setuptools.package-data]
+rampart = ["drivers/prompts/*.yaml"]
 
 [tool.coverage.run]
 source = ["rampart"]
@@ -114,6 +122,9 @@ known-first-party = ["rampart"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
+
+[tool.ruff.lint.pylint]
+max-args = 10
 
 [tool.uv.sources]
 pyrit = { git = "https://github.com/microsoft/PyRIT", rev = "6dc8b94139757390286bbce7d53c1f7e58e66e29" } # v0.13.0

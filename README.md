@@ -1,3 +1,5 @@
+Fork del proyecto RAMPART de Microsoft solo por curiosidad. Aún no he modificado nada
+
 <p align="center">
   <img src="https://github.com/microsoft/RAMPART/raw/main/docs/images/RAMPART.svg" alt="RAMPART Logo" width="300"/>
 </p>
